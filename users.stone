@@ -5,8 +5,6 @@ import common
 
 import team_common
 
-import team_policies
-
 import users_common
 
 #
@@ -115,7 +113,7 @@ struct FullAccount extends Account
         :link:`IETF language tags http://en.wikipedia.org/wiki/IETF_language_tag`."
     referral_link String
         "The user's :link:`referral link https://www.dropbox.com/referrals`."
-    team FullTeam?
+    team Team?
         "If this account is a member of a team, information about that team."
     team_member_id String?
         "This account's unique team member id. This field will only be present if
@@ -172,21 +170,6 @@ struct Team
     example default
         id = "dbtid:AAFdgehTzw7WlXhZJsbGCLePe8RvQGYDr-I"
         name = "Acme, Inc."
-
-struct FullTeam extends Team
-    "Detailed information about a team."
-
-    sharing_policies team_policies.TeamSharingPolicies
-        "Team policies governing sharing."
-
-    office_addin_policy team_policies.OfficeAddInPolicy
-        "Team policy governing the use of the Office Add-In."
-
-    example default
-        id = "dbtid:AAFdgehTzw7WlXhZJsbGCLePe8RvQGYDr-I"
-        name = "Acme, Inc."
-        sharing_policies = default
-        office_addin_policy = disabled
 
 struct Name
     "Representations for a person's name to assist with internationalization."
