@@ -64,6 +64,9 @@ struct Metadata
         "Please use :field:`FileSharingInfo.parent_shared_folder_id`
         or :field:`FolderSharingInfo.parent_shared_folder_id` instead."
 
+    preview_url String?
+        "The preview URL of the file."
+
     example default
         file = default
 
@@ -555,6 +558,7 @@ route list_folder (ListFolderArg, ListFolderResult, ListFolderError)
 
     attrs
         allow_app_folder_app = true
+        auth = "app, user"
         select_admin_mode = "whole_team"
         scope = "files.metadata.read"
 
@@ -580,6 +584,7 @@ route list_folder/continue (ListFolderContinueArg, ListFolderResult, ListFolderC
 
     attrs
         allow_app_folder_app = true
+        auth = "app, user"
         select_admin_mode = "whole_team"
         scope = "files.metadata.read"
 
@@ -672,7 +677,9 @@ route download_zip (DownloadZipArg, DownloadZipResult, DownloadZipError)
     "Download a folder from the user's Dropbox, as a zip file. The folder must be less than 20 GB
     in size and any single file within must be less than 4 GB in size. The resulting zip must have
     fewer than 10,000 total file and folder entries, including the top level folder. The input
-    cannot be a single file."
+    cannot be a single file.
+
+    Note: this endpoint does not support HTTP range requests."
 
     attrs
         host = "content"
@@ -776,6 +783,10 @@ union UploadError
         "Unable to save the uploaded contents to a file."
     properties_error file_properties.InvalidPropertyGroupError
         "The supplied property group is invalid. The file has uploaded without property groups."
+    payload_too_large
+        "The request payload must be at most 150 MB."
+    content_hash_mismatch
+        "The content received by the Dropbox server in this call does not match the provided content hash."
 
 struct UploadSessionOffsetError
     correct_offset UInt64
@@ -786,6 +797,10 @@ union UploadSessionStartError
         "Uploading data not allowed when starting concurrent upload session."
     concurrent_session_close_not_allowed
         "Can not start a closed concurrent upload session."
+    payload_too_large
+        "The request payload must be at most 150 MB."
+    content_hash_mismatch
+        "The content received by the Dropbox server in this call does not match the provided content hash."
 
 union UploadSessionLookupError
     not_found
@@ -808,6 +823,12 @@ union UploadSessionLookupError
         "For concurrent upload sessions, offset needs to be multiple of 4194304 bytes."
     concurrent_session_invalid_data_size
         "For concurrent upload sessions, only chunks with size multiple of 4194304 bytes can be uploaded."
+    payload_too_large
+        "The request payload must be at most 150 MB."
+
+union UploadSessionAppendError extends UploadSessionLookupError
+    content_hash_mismatch
+        "The content received by the Dropbox server in this call does not match the provided content hash."
 
 union UploadSessionFinishError
     lookup_failed UploadSessionLookupError
@@ -830,6 +851,10 @@ union UploadSessionFinishError
         "Concurrent upload sessions need to be closed before finishing."
     concurrent_session_missing_data
         "Not all pieces of data were uploaded before trying to finish the session."
+    payload_too_large
+        "The request payload must be at most 150 MB."
+    content_hash_mismatch
+        "The content received by the Dropbox server in this call does not match the provided content hash."
 
 # Req/Resp
 
@@ -850,6 +875,11 @@ struct UploadSessionStartArg
         "Type of upload session you want to start. If not specified, default is
         :field:`UploadSessionType.sequential`."
 
+    content_hash Sha256HexHash?
+        "A hash of the file content uploaded in this call. If provided and the uploaded content
+        does not match this hash, an error will be returned. For more information see our
+        :link:`Content hash https://www.dropbox.com/developers/reference/content-hash` page."
+
     example with_close
         close = false
 
@@ -861,6 +891,40 @@ struct UploadSessionStartResult
 
     example default
         session_id = "1234faaf0678bcde"
+
+route upload_session/start_batch (UploadSessionStartBatchArg, UploadSessionStartBatchResult, Void)
+    "This route starts batch of upload_sessions. Please refer to `upload_session/start` usage.
+
+    Calls to this endpoint will count as data transport calls for any Dropbox
+    Business teams with a limit on the number of data transport calls allowed
+    per month. For more information, see the :link:`Data transport limit page
+    https://www.dropbox.com/developers/reference/data-transport-limit`."
+
+    attrs
+        style = "rpc"
+        allow_app_folder_app = true
+        select_admin_mode = "team_admin"
+        scope = "files.content.write"
+
+struct UploadSessionStartBatchArg
+    session_type UploadSessionType?
+        "Type of upload session you want to start. If not specified, default is
+        :field:`UploadSessionType.sequential`."
+
+    num_sessions UInt64(min_value=1, max_value=1000)
+        "The number of upload sessions to start."
+
+    example default
+        num_sessions = 1
+
+struct UploadSessionStartBatchResult
+    session_ids List(String)
+        "A List of unique identifiers for the upload session. Pass each session_id to
+        :route:`upload_session/append:2` and
+        :route:`upload_session/finish`."
+
+    example default
+        session_ids = ["1234faaf0678bcde"]
 
 route upload_session/start (UploadSessionStartArg, UploadSessionStartResult, UploadSessionStartError)
     "Upload sessions allow you to upload a single file in one or more
@@ -912,11 +976,15 @@ struct UploadSessionAppendArg
         "If true, the current session will be closed, at which point
         you won't be able to call :route:`upload_session/append:2`
         anymore with the current session."
+    content_hash Sha256HexHash?
+        "A hash of the file content uploaded in this call. If provided and the uploaded content
+        does not match this hash, an error will be returned. For more information see our
+        :link:`Content hash https://www.dropbox.com/developers/reference/content-hash` page."
 
     example default
         cursor = default
 
-route upload_session/append:2 (UploadSessionAppendArg, Void, UploadSessionLookupError)
+route upload_session/append:2 (UploadSessionAppendArg, Void, UploadSessionAppendError)
     "Append more data to an upload session.
 
     When the parameter close is set, this call will close the session.
@@ -950,7 +1018,7 @@ struct UploadSessionCursor
         session_id = "8dd9d57374911153"
         offset = 1073741824
 
-route upload_session/append (UploadSessionCursor, Void, UploadSessionLookupError) deprecated by upload_session/append:2
+route upload_session/append (UploadSessionCursor, Void, UploadSessionAppendError) deprecated by upload_session/append:2
     "Append more data to an upload session.
 
     A single request should not upload more than 150 MB. The maximum size of
@@ -1007,6 +1075,8 @@ union_closed WriteMode
     example with_revision
         update = "a1c10ce0dd78"
 
+# NOTE: If you update this, also update dropbox.api.upload_session_utils.COMMIT_INFO_FIELDS
+# or else tests will fail
 struct CommitInfo
     path WritePathOrId
         "Path in the user's Dropbox to save the file."
@@ -1055,6 +1125,10 @@ struct UploadSessionFinishArg
         "Contains the upload session ID and the offset."
     commit CommitInfo
         "Contains the path and other optional modifiers for the commit."
+    content_hash Sha256HexHash?
+        "A hash of the file content uploaded in this call. If provided and the uploaded content
+        does not match this hash, an error will be returned. For more information see our
+        :link:`Content hash https://www.dropbox.com/developers/reference/content-hash` page."
 
     example default
         cursor = default
@@ -1086,7 +1160,17 @@ route upload_session/finish (UploadSessionFinishArg, FileMetadata, UploadSession
         select_admin_mode = "team_admin"
         scope= "files.content.write"
 
-route upload (CommitInfo, FileMetadata, UploadError)
+struct UploadArg extends CommitInfo
+    content_hash Sha256HexHash?
+        "A hash of the file content uploaded in this call. If provided and the uploaded content
+        does not match this hash, an error will be returned. For more information see our
+        :link:`Content hash https://www.dropbox.com/developers/reference/content-hash` page."
+
+    example default
+        path = "/Homework/math/Matrices.txt"
+        content_hash = null
+
+route upload (UploadArg, FileMetadata, UploadError)
     "Create a new file with the contents provided in the request.
 
     Do not use this to upload a file larger than 150 MB. Instead, create an
@@ -1151,7 +1235,7 @@ union UploadSessionFinishBatchLaunch extends async.LaunchResultBase
     example async_job_id
         async_job_id = "34g93hh34h04y384084"
 
-route upload_session/finish_batch (UploadSessionFinishBatchArg, UploadSessionFinishBatchLaunch, Void)
+route upload_session/finish_batch (UploadSessionFinishBatchArg, UploadSessionFinishBatchLaunch, Void) deprecated by upload_session/finish_batch:2
     "This route helps you commit many files at once into a user's Dropbox. Use
     :route:`upload_session/start` and :route:`upload_session/append:2` to
     upload file contents. We recommend uploading many files in parallel to increase
@@ -1178,6 +1262,31 @@ route upload_session/finish_batch (UploadSessionFinishBatchArg, UploadSessionFin
         allow_app_folder_app = true
         select_admin_mode = "team_admin"
         scope = "files.content.write"
+
+route upload_session/finish_batch:2 (UploadSessionFinishBatchArg, UploadSessionFinishBatchResult, Void)
+    "This route helps you commit many files at once into a user's Dropbox. Use
+    :route:`upload_session/start` and :route:`upload_session/append:2` to
+    upload file contents. We recommend uploading many files in parallel to increase
+    throughput. Once the file contents have been uploaded, rather than calling
+    :route:`upload_session/finish`, use this route to finish all your upload sessions
+    in a single request.
+
+    :field:`UploadSessionStartArg.close` or :field:`UploadSessionAppendArg.close`
+    needs to be true for the last
+    :route:`upload_session/start` or :route:`upload_session/append:2` call of each upload session. The maximum
+    size of a file one can upload to an upload session is 350 GB.
+
+    We allow up to 1000 entries in a single request.
+
+    Calls to this endpoint will count as data transport calls for any Dropbox
+    Business teams with a limit on the number of data transport calls allowed
+    per month. For more information, see the :link:`Data transport limit page https://www.dropbox.com/developers/reference/data-transport-limit`."
+
+    attrs
+        allow_app_folder_app = true
+        select_admin_mode = "team_admin"
+        scope = "files.content.write"
+
 
 route upload_session/finish_batch/check(async.PollArg, UploadSessionFinishBatchJobStatus, async.PollError)
     "Returns the status of an asynchronous job for :route:`upload_session/finish_batch`. If
@@ -1346,6 +1455,9 @@ struct SearchOptions
     file_categories List(FileCategory)?
         "Restricts search to only the file categories specified. Only supported for active file search."
 
+    account_id users_common.AccountId?
+        "Restricts results to the given account id."
+
     example default
         path = "/Folder"
         max_results = 20
@@ -1487,8 +1599,7 @@ union LookupError
     not_folder
         "We were expecting a folder, but the given path refers to something that isn't a folder."
     restricted_content
-        "The file cannot be transferred because the content is restricted.  For example,
-        sometimes there are legal restrictions due to copyright claims."
+        "The file cannot be transferred because the content is restricted. For example, we might restrict a file due to legal requirements."
     unsupported_content_type
         "This operation is not supported for this content type."
     locked
@@ -1672,7 +1783,7 @@ union DeleteError
         "There are too many files in one request. Please retry with fewer files."
 
 struct DeleteBatchArg
-    entries List(DeleteArg)
+    entries List(DeleteArg, max_items=1000)
 
     example default
         entries = [delete]
@@ -1857,10 +1968,16 @@ union RelocationError
         "Can't move the shared folder to the given destination."
     cant_move_into_vault MoveIntoVaultError
         "Some content cannot be moved into Vault under certain circumstances, see detailed error."
+    cant_move_into_family MoveIntoFamilyError
+        "Some content cannot be moved into the Family Room folder under certain circumstances, see detailed error."
 
 union MoveIntoVaultError
     is_shared_folder
         "Moving shared folder into Vault is not allowed."
+
+union MoveIntoFamilyError
+    is_shared_folder
+        "Moving shared folder into Family Room folder is not allowed."
 
 struct RelocationResult extends FileOpsResult
     metadata Metadata
@@ -1870,7 +1987,7 @@ struct RelocationResult extends FileOpsResult
         metadata = default
 
 struct RelocationBatchArgBase
-    entries List(RelocationPath, min_items=1)
+    entries List(RelocationPath, min_items=1, max_items=1000)
         "List of entries to be moved or copied. Each entry is :type:`RelocationPath`."
     autorename Boolean = false
         "If there's a conflict with any file, have the Dropbox server try to
@@ -2528,7 +2645,7 @@ struct GetTemporaryLinkResult
 
     example default
         metadata = default
-        link = "https://content.dropboxapi.com/apitl/1/YXNkZmFzZGcyMzQyMzI0NjU2NDU2NDU2"
+        link = "https://ucabc123456.dl.dropboxusercontent.com/cd/0/get/abcdefghijklmonpqrstuvwxyz1234567890/file"
 
 union GetTemporaryLinkError
     path LookupError
@@ -2747,7 +2864,7 @@ union SaveUrlError
 route save_url(SaveUrlArg, SaveUrlResult, SaveUrlError)
     "Save the data from a specified URL into a file in user's Dropbox.
 
-    Note that the transfer from the URL must complete within 5 minutes, or the
+    Note that the transfer from the URL must complete within 15 minutes, or the
     operation will time out and the job will fail.
 
     If the given path already exists, the file will be renamed to avoid the
@@ -2813,13 +2930,12 @@ union_closed AlphaGetMetadataError extends GetMetadataError
     properties_error file_properties.LookUpPropertiesError
 
 #
-# Patched /upload that accepts properties
+# Alpha /upload, originally for properties API. Can be used to pilot new functionality.
 #
 
-route alpha/upload (CommitInfoWithProperties, FileMetadata, UploadErrorWithProperties) deprecated by alpha/upload
-    "Create a new file with the contents provided in the request. Note that this
-    endpoint is part of the properties API alpha and is slightly different from
-    :route:`upload`.
+route alpha/upload (UploadArg, FileMetadata, UploadError) deprecated by upload
+    "Create a new file with the contents provided in the request. Note that the
+    behavior of this alpha endpoint is unstable and subject to change.
 
     Do not use this to upload a file larger than 150 MB. Instead, create an
     upload session with :route:`upload_session/start`."
@@ -2830,15 +2946,6 @@ route alpha/upload (CommitInfoWithProperties, FileMetadata, UploadErrorWithPrope
         is_preview=true
         allow_app_folder_app = true
         scope = "files.content.write"
-
-struct CommitInfoWithProperties extends CommitInfo
-    example default
-        path = "/Homework/math/Matrices.txt"
-        autorename = true
-
-union UploadErrorWithProperties extends UploadError
-    example default
-        properties_error = does_not_fit_template
 
 #
 # Deprecated File Properties routes
